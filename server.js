@@ -248,6 +248,32 @@ async function deleteMeetingFromDb(id) {
     }
 }
 
+// Helper to update a meeting's primary ID (needed when mapping fallback calendar event ID to actual onlineMeetingId)
+async function updateMeetingIdInDb(oldId, newId) {
+    if (usePostgres) {
+        try {
+            await pool.query('UPDATE teams_meetings SET id = $1 WHERE id = $2', [newId, oldId]);
+            console.log(`Meeting record ID updated from ${oldId} to ${newId} in PostgreSQL.`);
+        } catch (err) {
+            console.error(`Error updating meeting ID in PostgreSQL:`, err.message);
+            throw err;
+        }
+    } else {
+        try {
+            const meetings = await getMeetings();
+            const idx = meetings.findIndex(m => m.id === oldId);
+            if (idx !== -1) {
+                meetings[idx].id = newId;
+                fs.writeFileSync(dbPath, JSON.stringify(meetings, null, 2));
+                console.log(`Meeting record ID updated from ${oldId} to ${newId} in local JSON DB.`);
+            }
+        } catch (err) {
+            console.error("Error writing ID update to local JSON DB:", err);
+            throw err;
+        }
+    }
+}
+
 // ==========================================
 // 1. ENVIRONMENT CONFIGURATION LOGIC
 // ==========================================
@@ -830,8 +856,48 @@ app.post('/teams-webhook', async (req, res) => {
     }
 
     const meetings = await getMeetings();
-    const meeting = meetings.find(m => m.id === meetingId);
+    let meeting = meetings.find(m => m.id === meetingId);
     
+    if (!meeting) {
+        console.log(`Webhook received for meeting ID ${meetingId} which is not directly tracked. Attempting to resolve joinWebUrl from Graph...`);
+        try {
+            const token = await getGraphAccessToken();
+            const url = `https://graph.microsoft.com/v1.0/users/${organizerId}/onlineMeetings/${meetingId}`;
+            const onlineMeetRes = await axios.get(url, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const joinWebUrl = onlineMeetRes.data?.joinWebUrl;
+            if (joinWebUrl) {
+                console.log(`Resolved joinWebUrl: ${joinWebUrl}. Searching database for matching joinUrl...`);
+                const matchedMeeting = meetings.find(m => m.joinUrl && m.joinUrl.toLowerCase() === joinWebUrl.toLowerCase());
+                if (matchedMeeting) {
+                    const oldId = matchedMeeting.id;
+                    console.log(`Found matching scheduled meeting! Previous ID: ${oldId}. Mapping to real Teams onlineMeetingId: ${meetingId}`);
+                    
+                    // Update database record to use the real Teams onlineMeetingId instead of fallback ID
+                    await updateMeetingIdInDb(oldId, meetingId);
+                    
+                    // Update the in-memory object ID and log
+                    matchedMeeting.id = meetingId;
+                    matchedMeeting.logs.push({
+                        time: new Date().toISOString(),
+                        status: "ID Resolved",
+                        message: `Mapped fallback ID ${oldId} to real Teams onlineMeetingId ${meetingId} via webhook resolution.`
+                    });
+                    await updateMeeting(meetingId, { logs: matchedMeeting.logs });
+                    
+                    meeting = matchedMeeting;
+                } else {
+                    console.log(`No scheduled meeting matches joinWebUrl: ${joinWebUrl}`);
+                }
+            } else {
+                console.warn(`Graph response for meeting ${meetingId} did not contain joinWebUrl.`);
+            }
+        } catch (resolveErr) {
+            console.error(`Failed to resolve meeting ${meetingId} from Graph:`, resolveErr.response ? resolveErr.response.data : resolveErr.message);
+        }
+    }
+
     if (meeting) {
         meeting.status = "Webhook Notification Received";
         meeting.logs.push({
