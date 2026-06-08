@@ -232,8 +232,8 @@ function renderMeetingsTable() {
         return `
             <tr>
                 <td><strong>${meeting.subject}</strong></td>
-                <td><code class="text-muted">${meeting.panelistEmail}</code></td>
-                <td><code class="text-muted">${meeting.candidateEmail}</code></td>
+                <td><code class="text-muted" title="${meeting.panelistEmail}">${meeting.panelistEmail}</code></td>
+                <td><code class="text-muted" title="${meeting.candidateEmail}">${meeting.candidateEmail}</code></td>
                 <td>${dateFormatted}</td>
                 <td>
                     <span class="badge ${statusClass}">${meeting.status}</span>
