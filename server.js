@@ -880,10 +880,27 @@ Your calendar has been blocked automatically. Click below to join the meeting wh
                 }
             }
 
+            // Build a rich Teams chat message (HTML) for the candidate
+            const candidateTeamsMessageHtml = `
+<b>🗓️ Interview Scheduled — ${subject}</b><br><br>
+<table>
+  <tr><td><b>Interviewer(s):</b></td><td>${panelists.join(', ')}</td></tr>
+  <tr><td><b>Start:</b></td><td>${startTimeFormatted} (IST)</td></tr>
+  <tr><td><b>End:</b></td><td>${endTimeFormatted} (IST)</td></tr>
+</table><br>
+Please click below to join the meeting when the time comes.<br><br>
+<a href="${joinUrl}"><b>▶ Join Teams Interview</b></a>
+            `.trim();
+
+            // Send Teams 1:1 message to the candidate
+            if (candidateEmail.toLowerCase() !== senderEmail.toLowerCase()) {
+                sendTeamsNotification(token, senderEmail, candidateEmail, candidateTeamsMessageHtml);
+            }
+
             newMeeting.logs.push({
                 time: new Date().toISOString(),
                 status: "Teams Notification Sent",
-                message: `Teams Activity notifications dispatched to Panelists (${panelists.filter(e => e.toLowerCase() !== senderEmail.toLowerCase()).join(', ')}).`
+                message: `Teams Activity notifications dispatched to Panelists (${panelists.filter(e => e.toLowerCase() !== senderEmail.toLowerCase()).join(', ')}) and Candidate (${candidateEmail}).`
             });
         } catch (emailErr) {
             console.warn("Failed during email/Teams notification dispatch:", emailErr.message);
