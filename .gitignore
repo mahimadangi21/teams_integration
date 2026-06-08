@@ -1,0 +1,7 @@
+.env
+node_modules/
+meetings.json
+downloads/
+.gemini/
+*.log
+.DS_Store

@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teams Sync Portal | Modern Interview Dashboard</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="index.css">
+</head>
+<body class="dark-theme">
+    <!-- Top-level Glow Background Blobs -->
+    <div class="glow-blob blob-1"></div>
+    <div class="glow-blob blob-2"></div>
+    <div class="glow-blob blob-3"></div>
+
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="logo-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M19 10.5V6C19 4.9 18.1 4 17 4H3C1.9 4 1 4.9 1 6V18C1 19.1 1.9 20 3 20H17C18.1 20 19 19.1 19 18V13.5L23 17.5V6.5L19 10.5Z" stroke="url(#logoGrad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <defs>
+                            <linearGradient id="logoGrad" x1="1" y1="4" x2="23" y2="20" gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#8B5CF6"/>
+                                <stop offset="1" stop-color="#3B82F6"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <h2>SyncTeams</h2>
+            </div>
+            <nav class="nav-menu">
+                <a href="#dashboard" class="nav-item active" data-target="dashboard">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#scheduler" class="nav-item" data-target="scheduler">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                    <span>Schedule Interview</span>
+                </a>
+                <a href="#player" class="nav-item" data-target="player" id="nav-player-btn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                    <span>Playback Room</span>
+                </a>
+                <a href="#settings" class="nav-item" data-target="settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                    <span>Graph Settings</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="simulation-banner">
+                    <h4>Demo Mode</h4>
+                    <p>Test the full webhook and player logic with mock data.</p>
+                    <button class="btn btn-primary btn-sm btn-block" id="btn-quick-demo">Run Demo Flow</button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="content-header">
+                <div>
+                    <h1 id="page-title">Dashboard Overview</h1>
+                    <p class="subtitle" id="page-subtitle">Monitor scheduled meetings and retrieved transcripts.</p>
+                </div>
+                <div class="header-actions">
+                    <div class="webhook-indicator offline" id="webhook-badge">
+                        <span class="indicator-dot"></span>
+                        <span class="indicator-text">Webhook Offline</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Dashboard View -->
+            <section id="view-dashboard" class="content-view active">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon purple">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                        </div>
+                        <div class="stat-info">
+                            <h3 id="stat-total">0</h3>
+                            <p>Total Interviews</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon blue">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                        </div>
+                        <div class="stat-info">
+                            <h3 id="stat-completed">0</h3>
+                            <p>Completed (Synced)</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon orange">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                        </div>
+                        <div class="stat-info">
+                            <h3 id="stat-pending">0</h3>
+                            <p>Scheduled / Processing</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <!-- Meeting List -->
+                    <div class="card grid-col-2">
+                        <div class="card-header">
+                            <h2>Interview Schedule</h2>
+                            <button class="btn btn-outline btn-sm" id="btn-refresh-meetings">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                                Refresh
+                            </button>
+                        </div>
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Subject</th>
+                                        <th>Panelist (Internal)</th>
+                                        <th>Candidate (External)</th>
+                                        <th>Date & Time</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="meetings-list-tbody">
+                                    <!-- Dynamic content -->
+                                    <tr>
+                                        <td colspan="6" class="text-center text-muted py-4">No scheduled interviews. Schedule one or run the Simulator!</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Webhook Live Logs -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>System Activity Log</h2>
+                            <span class="live-pulse">LIVE</span>
+                        </div>
+                        <div class="console-log" id="system-console">
+                            <div class="console-line system">[System] Application loaded. Ready to capture webhook notifications.</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Scheduler View -->
+            <section id="view-scheduler" class="content-view">
+                <div class="card max-w-2xl mx-auto">
+                    <div class="card-header">
+                        <h2>Schedule Teams Meeting</h2>
+                    </div>
+                    <form id="schedule-form" class="form-grid">
+                        <div class="form-group full-width">
+                            <label for="meet-subject">Interview Title / Subject</label>
+                            <input type="text" id="meet-subject" placeholder="e.g., Lead Frontend Developer - Technical Interview" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="meet-panelist">Panelist Email (Internal Organization User)</label>
+                            <input type="email" id="meet-panelist" placeholder="e.g., manager@yourdomain.com" required>
+                            <p class="field-hint">Must be a valid user account under your M365 tenant.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="meet-candidate">Candidate Email (External Outsider)</label>
+                            <input type="email" id="meet-candidate" placeholder="e.g., candidate@gmail.com" required>
+                            <p class="field-hint">Outlook invite will automatically send to this email.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="meet-start">Start Time</label>
+                            <input type="datetime-local" id="meet-start" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="meet-end">End Time</label>
+                            <input type="datetime-local" id="meet-end" required>
+                        </div>
+                        <div class="form-actions full-width">
+                            <button type="submit" class="btn btn-primary" id="btn-submit-schedule">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                                Create Calendar Event
+                            </button>
+                            <button type="button" class="btn btn-outline" id="btn-schedule-sim">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                                Create Simulation Event (Offline Test)
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Playback Room View -->
+            <section id="view-player" class="content-view">
+                <div class="no-meeting-selected" id="player-placeholder">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                    <h3>No Completed Meeting Selected</h3>
+                    <p>Select a meeting with synced assets from the Dashboard to open the Playback Room.</p>
+                </div>
+
+                <div class="player-workspace hidden" id="player-workspace">
+                    <div class="player-header">
+                        <div>
+                            <h2 id="player-title">Senior React Interview</h2>
+                            <p class="subtitle" id="player-details">Panelist: john@org.com | Candidate: outsider@domain.com</p>
+                        </div>
+                        <div class="player-header-actions">
+                            <a id="btn-download-transcript" class="btn btn-outline btn-sm" download>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                                Download Transcript
+                            </a>
+                            <a id="btn-download-video" class="btn btn-outline btn-sm" download>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                                Download Video
+                            </a>
+                        </div>
+                    </div>
+
+                    <div class="player-layout">
+                        <!-- Video Panel -->
+                        <div class="video-container">
+                            <video id="teams-video-player" controls preload="auto">
+                                <source id="video-source" src="" type="video/mp4">
+                                Your browser does not support the HTML5 video tag.
+                            </video>
+                        </div>
+
+                        <!-- Transcript Panel -->
+                        <div class="transcript-card">
+                            <div class="transcript-header">
+                                <h3>Interactive Meeting Transcript</h3>
+                                <input type="text" id="transcript-search" placeholder="Search transcript...">
+                            </div>
+                            <div class="transcript-body" id="transcript-body">
+                                <!-- Dynamic Transcript Rows -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Meeting Lifecycle Audit Timeline -->
+                    <div class="card mt-4">
+                        <div class="card-header">
+                            <h3>Meeting Lifecycle Audit Trails</h3>
+                        </div>
+                        <div class="audit-timeline" id="audit-timeline">
+                            <!-- Dynamic logs -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings View -->
+            <section id="view-settings" class="content-view">
+                <div class="settings-grid">
+                    <!-- Config Panel -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>Microsoft Graph API Credentials</h2>
+                        </div>
+                        <form id="settings-form" class="form-grid">
+                            <div class="form-group full-width">
+                                <label for="config-tenant-id">Directory (Tenant) ID</label>
+                                <input type="text" id="config-tenant-id" placeholder="e.g. 1a2b3c4d-5e6f-7g8h-9i0j-1k2l3m4n5o6p" required>
+                            </div>
+                            <div class="form-group full-width">
+                                <label for="config-client-id">Application (Client) ID</label>
+                                <input type="text" id="config-client-id" placeholder="e.g. 9p8o7n6m-5l4k-3j2i-1h0g-9f8e7d6c5b4a" required>
+                            </div>
+                            <div class="form-group full-width">
+                                <label for="config-client-secret">Client Secret Value</label>
+                                <input type="password" id="config-client-secret" placeholder="Enter new secret or leave masked to keep existing" required>
+                            </div>
+                            <div class="form-group full-width">
+                                <label for="config-webhook-url">Webhook Base URL</label>
+                                <input type="url" id="config-webhook-url" placeholder="e.g. https://xxxx-xxxx.ngrok-free.app">
+                                <p class="field-hint">Used to receive Graph Webhooks. Must be an HTTPS url exposed via ngrok or public server.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="config-default-panelist">Default Panelist Email</label>
+                                <input type="email" id="config-default-panelist" placeholder="e.g. interviewer@yourdomain.com">
+                            </div>
+                            <div class="form-group">
+                                <label for="config-default-candidate">Default Candidate Email</label>
+                                <input type="email" id="config-default-candidate" placeholder="e.g. outsider@gmail.com">
+                            </div>
+                            <div class="form-actions full-width">
+                                <button type="submit" class="btn btn-primary" id="btn-save-settings">Save Configurations</button>
+                                <button type="button" class="btn btn-outline" id="btn-test-connection">Test Graph API Connection</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Instructions Panel -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>Setup & Integration Instructions</h2>
+                        </div>
+                        <div class="instructions-content">
+                            <h3>1. Azure Entra ID App Setup</h3>
+                            <p>To connect to Microsoft Graph, you must register an application in Azure:</p>
+                            <ul>
+                                <li>Create an App Registration in Azure Entra ID.</li>
+                                <li>Create a Client Secret and paste it into the credentials form.</li>
+                                <li>Add the following <strong>Application Permissions</strong>:
+                                    <ul>
+                                        <li><code>Calendars.ReadWrite</code></li>
+                                        <li><code>CallTranscript.Read.All</code></li>
+                                        <li><code>CallRecording.Read.All</code></li>
+                                    </ul>
+                                </li>
+                                <li>Click <strong>"Grant Admin Consent"</strong> in Azure. (Essential!)</li>
+                            </ul>
+
+                            <h3>2. Testing Graph Webhooks Locally</h3>
+                            <p>Microsoft requires an HTTPS endpoint to send subscriptions alerts:</p>
+                            <ol>
+                                <li>Install ngrok globally or download it.</li>
+                                <li>Run <code>ngrok http 3000</code>.</li>
+                                <li>Copy the <code>https://...ngrok-free.app</code> URL.</li>
+                                <li>Paste it into the <strong>Webhook Base URL</strong> field on this page and save.</li>
+                                <li>Use the <strong>Register Webhooks</strong> button below to subscribe.</li>
+                            </ol>
+
+                            <div class="settings-actions">
+                                <button class="btn btn-outline btn-block" id="btn-register-subscriptions">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                                    Register Graph Webhooks
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast-container"></div>
+
+    <!-- Client-side script -->
+    <script src="app.js"></script>
+</body>
+</html>
