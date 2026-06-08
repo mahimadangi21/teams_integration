@@ -753,11 +753,11 @@ app.post('/api/subscribe', async (req, res) => {
     try {
         const token = await getGraphAccessToken();
         const subUrl = 'https://graph.microsoft.com/v1.0/subscriptions';
-        const expirationDateTime = new Date(Date.now() + 3600000 * 4).toISOString();
+        const expirationDateTime = new Date(Date.now() + 60000 * 50).toISOString();
 
         // 1. Subscribe to Transcripts
         const transcriptPayload = {
-            changeType: "updated",
+            changeType: "created",
             notificationUrl: `${webhookBase}/teams-webhook`,
             resource: "communications/onlineMeetings/getAllTranscripts",
             expirationDateTime: expirationDateTime,
@@ -771,7 +771,7 @@ app.post('/api/subscribe', async (req, res) => {
 
         // 2. Subscribe to Recordings
         const recordingPayload = {
-            changeType: "updated",
+            changeType: "created",
             notificationUrl: `${webhookBase}/teams-webhook`,
             resource: "communications/onlineMeetings/getAllRecordings",
             expirationDateTime: expirationDateTime,
