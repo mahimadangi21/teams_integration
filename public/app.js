@@ -375,15 +375,19 @@ async function loadConfig() {
         const res = await fetch('/api/config');
         const data = await res.json();
         
-        document.getElementById('config-tenant-id').value = data.MICROSOFT_TENANT_ID;
-        document.getElementById('config-client-id').value = data.MICROSOFT_CLIENT_ID;
-        document.getElementById('config-client-secret').value = data.MICROSOFT_CLIENT_SECRET;
-        document.getElementById('config-webhook-url').value = data.WEBHOOK_BASE_URL;
-        document.getElementById('config-default-panelist').value = data.DEFAULT_PANELIST_EMAIL;
-        document.getElementById('config-default-candidate').value = data.DEFAULT_CANDIDATE_EMAIL;
+        document.getElementById('config-tenant-id').value = data.MICROSOFT_TENANT_ID || '';
+        document.getElementById('config-client-id').value = data.MICROSOFT_CLIENT_ID || '';
+        document.getElementById('config-client-secret').value = data.MICROSOFT_CLIENT_SECRET || '';
+        document.getElementById('config-webhook-url').value = data.WEBHOOK_BASE_URL || '';
+        document.getElementById('config-default-panelist').value = data.DEFAULT_PANELIST_EMAIL || '';
+        document.getElementById('config-default-candidate').value = data.DEFAULT_CANDIDATE_EMAIL || '';
 
         // Auto-fill schedule form with defaults if present
-        if (data.DEFAULT_PANELIST_EMAIL) document.getElementById('meet-panelist').value = data.DEFAULT_PANELIST_EMAIL;
+        if (data.DEFAULT_PANELIST_EMAIL) {
+            document.getElementById('meet-panelist').value = data.DEFAULT_PANELIST_EMAIL;
+            const pastEmailInput = document.getElementById('past-recordings-email');
+            if (pastEmailInput) pastEmailInput.value = data.DEFAULT_PANELIST_EMAIL;
+        }
         if (data.DEFAULT_CANDIDATE_EMAIL) document.getElementById('meet-candidate').value = data.DEFAULT_CANDIDATE_EMAIL;
 
         if (data.WEBHOOK_BASE_URL) {
@@ -480,7 +484,7 @@ window.openPlaybackRoom = function(id) {
     playerWorkspace.classList.remove('hidden');
 
     playerTitle.innerText = meeting.subject;
-    playerDetails.innerText = `Panelist: ${meeting.panelistEmail} | Candidate: ${meeting.candidateEmail} | Status: ${meeting.status}`;
+    playerDetails.innerText = `Panelist(s): ${meeting.panelistEmail} | Candidate: ${meeting.candidateEmail} | Status: ${meeting.status}`;
 
     // Setup Download Links
     if (meeting.transcriptPath) {
@@ -685,14 +689,18 @@ function renderAuditTimeline(logs) {
 
     auditTimeline.innerHTML = logs.map(log => {
         let logClass = 'system';
-        if (log.status.toLowerCase().includes('fail') || log.status.toLowerCase().includes('error')) logClass = 'error';
-        else if (log.status.toLowerCase().includes('complete') || log.status.toLowerCase().includes('fetch')) logClass = 'success';
-        else if (log.status.toLowerCase().includes('webhook') || log.status.toLowerCase().includes('received')) logClass = 'warning';
+        const status = log.status || log.type || 'System';
+        const message = log.message || '';
+        const logTime = log.time || log.timestamp || new Date().toISOString();
+        
+        if (status.toLowerCase().includes('fail') || status.toLowerCase().includes('error')) logClass = 'error';
+        else if (status.toLowerCase().includes('complete') || status.toLowerCase().includes('fetch')) logClass = 'success';
+        else if (status.toLowerCase().includes('webhook') || status.toLowerCase().includes('received')) logClass = 'warning';
 
         return `
             <div class="timeline-item ${logClass}">
-                <span class="timeline-time">${new Date(log.time).toLocaleTimeString()}</span>
-                <span class="timeline-message"><strong>${log.status}</strong>: ${log.message}</span>
+                <span class="timeline-time">${new Date(logTime).toLocaleTimeString()}</span>
+                <span class="timeline-message"><strong>${status}</strong>: ${message}</span>
             </div>
         `;
     }).join('');
@@ -759,6 +767,205 @@ btnQuickDemo.addEventListener('click', async () => {
 });
 
 // ==========================================
+// 7b. ONEDRIVE PAST RECORDINGS LOGIC
+// ==========================================
+const btnLoadPastRecordings = document.getElementById('btn-load-past-recordings');
+const pastRecordingsEmail = document.getElementById('past-recordings-email');
+const pastRecordingsLoading = document.getElementById('past-recordings-loading');
+const pastRecordingsEmpty = document.getElementById('past-recordings-empty');
+const pastRecordingsPanel = document.getElementById('past-recordings-panel');
+const pastRecordingsDropdown = document.getElementById('past-recordings-dropdown');
+const pastRecordingInfo = document.getElementById('past-recording-info');
+const prInfoName = document.getElementById('pr-info-name');
+const prInfoSize = document.getElementById('pr-info-size');
+const prInfoDate = document.getElementById('pr-info-date');
+const prInfoSource = document.getElementById('pr-info-source');
+const btnFetchPastRecording = document.getElementById('btn-fetch-past-recording');
+const btnOpenOnedrive = document.getElementById('btn-open-onedrive');
+const pastRecordingProgress = document.getElementById('past-recording-progress');
+const prProgressText = document.getElementById('pr-progress-text');
+
+function formatBytes(bytes, decimals = 2) {
+    if (!bytes || bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+if (btnLoadPastRecordings) {
+    btnLoadPastRecordings.addEventListener('click', async () => {
+        const email = pastRecordingsEmail ? pastRecordingsEmail.value.trim() : '';
+        if (!email) {
+            showToast('warning', 'Please enter a panelist email first.');
+            return;
+        }
+
+        btnLoadPastRecordings.disabled = true;
+        if (pastRecordingsEmail) pastRecordingsEmail.disabled = true;
+        pastRecordingsLoading.style.display = 'block';
+        pastRecordingsEmpty.style.display = 'none';
+        pastRecordingsPanel.style.display = 'none';
+        pastRecordingInfo.style.display = 'none';
+        btnFetchPastRecording.disabled = true;
+
+        try {
+            const res = await fetch(`/api/past-recordings?email=${encodeURIComponent(email)}`);
+            const data = await res.json();
+            
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            pastRecordingsDropdown.innerHTML = '<option value="" disabled selected>-- Select an MP4 file --</option>';
+
+            if (!data.recordings || data.recordings.length === 0) {
+                pastRecordingsEmpty.style.display = 'block';
+                const emptyText = pastRecordingsEmpty.querySelector('p');
+                if (emptyText) {
+                    emptyText.innerText = `No recordings found on OneDrive for ${email}.`;
+                }
+            } else {
+                data.recordings.forEach(rec => {
+                    const opt = document.createElement('option');
+                    opt.value = rec.id;
+                    opt.textContent = rec.name;
+                    opt.dataset.size = rec.size || 0;
+                    opt.dataset.date = rec.lastModified || '';
+                    opt.dataset.webUrl = rec.webUrl || '';
+                    opt.dataset.source = rec.source || 'OneDrive';
+                    pastRecordingsDropdown.appendChild(opt);
+                });
+                pastRecordingsPanel.style.display = 'flex';
+            }
+            logToConsole('success', `Loaded ${data.recordings?.length || 0} past recordings from ${data.organizer}'s OneDrive.`);
+        } catch (err) {
+            console.error("Failed to load past recordings:", err);
+            logToConsole('error', `Failed to load past recordings: ${err.message}`);
+            showToast('error', `OneDrive error: ${err.message}`);
+            pastRecordingsEmpty.style.display = 'block';
+            const emptyText = pastRecordingsEmpty.querySelector('p');
+            if (emptyText) {
+                emptyText.innerText = `Error loading recordings: ${err.message}`;
+            }
+        } finally {
+            pastRecordingsLoading.style.display = 'none';
+            btnLoadPastRecordings.disabled = false;
+            if (pastRecordingsEmail) pastRecordingsEmail.disabled = false;
+        }
+    });
+}
+
+if (pastRecordingsDropdown) {
+    pastRecordingsDropdown.addEventListener('change', () => {
+        const selectedOpt = pastRecordingsDropdown.selectedOptions[0];
+        if (!selectedOpt || selectedOpt.value === "") {
+            pastRecordingInfo.style.display = 'none';
+            btnFetchPastRecording.disabled = true;
+            btnOpenOnedrive.style.display = 'none';
+            return;
+        }
+
+        const name = selectedOpt.textContent;
+        const size = parseInt(selectedOpt.dataset.size);
+        const dateStr = selectedOpt.dataset.date;
+        const webUrl = selectedOpt.dataset.webUrl;
+        const source = selectedOpt.dataset.source;
+
+        prInfoName.textContent = name;
+        prInfoSize.textContent = formatBytes(size);
+        prInfoDate.textContent = dateStr ? new Date(dateStr).toLocaleString() : '-';
+        prInfoSource.textContent = source;
+        pastRecordingInfo.style.display = 'block';
+
+        btnFetchPastRecording.disabled = false;
+
+        if (webUrl) {
+            btnOpenOnedrive.href = webUrl;
+            btnOpenOnedrive.style.display = 'inline-flex';
+        } else {
+            btnOpenOnedrive.style.display = 'none';
+        }
+    });
+}
+
+if (btnFetchPastRecording) {
+    btnFetchPastRecording.addEventListener('click', async () => {
+        const selectedOpt = pastRecordingsDropdown.selectedOptions[0];
+        if (!selectedOpt) return;
+
+        const fileId = selectedOpt.value;
+        const fileName = selectedOpt.textContent;
+        const source = selectedOpt.dataset.source;
+        const email = pastRecordingsEmail ? pastRecordingsEmail.value.trim() : '';
+
+        btnFetchPastRecording.disabled = true;
+        pastRecordingsDropdown.disabled = true;
+        btnLoadPastRecordings.disabled = true;
+        if (pastRecordingsEmail) pastRecordingsEmail.disabled = true;
+        pastRecordingProgress.style.display = 'flex';
+        prProgressText.textContent = `Generating temporary direct playback stream URL...`;
+
+        try {
+            logToConsole('system', `Requesting pre-signed URL for: ${fileName}...`);
+            const res = await fetch('/api/fetch-past-recording', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fileId, fileName, email })
+            });
+            const data = await res.json();
+
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            logToConsole('success', `Direct stream URL generated successfully.`);
+            showToast('success', 'Playback starting!');
+
+            switchView('player');
+            
+            playerPlaceholder.classList.add('hidden');
+            playerWorkspace.classList.remove('hidden');
+
+            playerTitle.innerText = fileName;
+            playerDetails.innerText = `Source: OneDrive Recording (${source}) | User: ${email}`;
+
+            btnDownloadTranscript.classList.add('hidden');
+            btnDownloadVideo.href = data.downloadUrl;
+            btnDownloadVideo.classList.remove('hidden');
+            
+            videoSource.src = data.downloadUrl;
+            teamsVideoPlayer.load();
+
+            transcriptCues = [];
+            transcriptBody.innerHTML = `<p class="text-center text-muted py-4">No transcript text associated with this past recording.</p>`;
+            renderAuditTimeline([
+                { time: new Date().toISOString(), status: 'Success', message: `Pre-signed stream link acquired from OneDrive. Starting video stream.` }
+            ]);
+
+            setTimeout(() => {
+                if (teamsVideoPlayer) {
+                    teamsVideoPlayer.play().catch(e => {
+                        console.warn("Autoplay blocked, user click required", e);
+                    });
+                }
+            }, 500);
+
+        } catch (err) {
+            console.error("Failed to generate direct play URL:", err);
+            logToConsole('error', `Playback error: ${err.message}`);
+            showToast('error', `Playback failed: ${err.message}`);
+        } finally {
+            pastRecordingProgress.style.display = 'none';
+            btnFetchPastRecording.disabled = false;
+            pastRecordingsDropdown.disabled = false;
+            btnLoadPastRecordings.disabled = false;
+            if (pastRecordingsEmail) pastRecordingsEmail.disabled = false;
+        }
+    });
+}
+
 // 8. INITIALIZATION
 // ==========================================
 initScheduleTimes();
@@ -776,3 +983,47 @@ if ("Notification" in window && Notification.permission === "default") {
 
 // Poll meetings list for changes every 4 seconds to catch webhook files updates
 setInterval(loadMeetings, 4000);
+
+// ==========================================
+// 9. THEME TOGGLE LOGIC
+// ==========================================
+const btnThemeToggle = document.getElementById('btn-theme-toggle');
+if (btnThemeToggle) {
+    const sunIcon = btnThemeToggle.querySelector('.sun-icon');
+    const moonIcon = btnThemeToggle.querySelector('.moon-icon');
+    const themeText = document.getElementById('theme-text');
+
+    // Default to dark theme if not set
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    if (savedTheme === 'light') {
+        document.body.classList.add('light-theme');
+        document.body.classList.remove('dark-theme');
+        if (sunIcon) sunIcon.classList.remove('hidden');
+        if (moonIcon) moonIcon.classList.add('hidden');
+        if (themeText) themeText.innerText = 'Dark Theme';
+    } else {
+        document.body.classList.add('dark-theme');
+        document.body.classList.remove('light-theme');
+        if (sunIcon) sunIcon.classList.add('hidden');
+        if (moonIcon) moonIcon.classList.remove('hidden');
+        if (themeText) themeText.innerText = 'Light Theme';
+    }
+
+    btnThemeToggle.addEventListener('click', () => {
+        if (document.body.classList.contains('light-theme')) {
+            document.body.classList.replace('light-theme', 'dark-theme');
+            if (sunIcon) sunIcon.classList.add('hidden');
+            if (moonIcon) moonIcon.classList.remove('hidden');
+            if (themeText) themeText.innerText = 'Light Theme';
+            localStorage.setItem('theme', 'dark');
+            logToConsole('system', 'Theme changed to Dark Mode.');
+        } else {
+            document.body.classList.replace('dark-theme', 'light-theme');
+            if (sunIcon) sunIcon.classList.remove('hidden');
+            if (moonIcon) moonIcon.classList.add('hidden');
+            if (themeText) themeText.innerText = 'Dark Theme';
+            localStorage.setItem('theme', 'light');
+            logToConsole('system', 'Theme changed to Light Mode.');
+        }
+    });
+}

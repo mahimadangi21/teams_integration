@@ -54,14 +54,20 @@ if (usePostgres) {
         }
     });
 
+    // Handle unexpected idle database connection drops to prevent process crashes
+    pool.on('error', (err, client) => {
+        console.error('Unexpected database client connection error:', err.message);
+    });
+
     // Create Table Schema on startup
     const createTableQuery = `
         CREATE TABLE IF NOT EXISTS teams_meetings (
             id VARCHAR(255) PRIMARY KEY,
             event_id VARCHAR(255),
             subject VARCHAR(255),
-            panelist_email VARCHAR(255),
+            panelist_email TEXT,
             candidate_email VARCHAR(255),
+            organizer_email VARCHAR(255),
             start_time TIMESTAMP,
             end_time TIMESTAMP,
             join_url TEXT,
@@ -76,7 +82,18 @@ if (usePostgres) {
     `;
 
     pool.query(createTableQuery)
-        .then(() => console.log("PostgreSQL schema table 'teams_meetings' verified/created successfully."))
+        .then(() => {
+            console.log("PostgreSQL schema table 'teams_meetings' verified/created successfully.");
+            return pool.query('ALTER TABLE teams_meetings ALTER COLUMN panelist_email TYPE TEXT');
+        })
+        .then(() => {
+            console.log("PostgreSQL column 'panelist_email' altered/verified as TEXT.");
+            // Add organizer_email column if it doesn't exist (safe migration)
+            return pool.query(`ALTER TABLE teams_meetings ADD COLUMN IF NOT EXISTS organizer_email VARCHAR(255)`);
+        })
+        .then(() => {
+            console.log("PostgreSQL column 'organizer_email' verified/added.");
+        })
         .catch(err => {
             console.error("FATAL: Failed to initialize PostgreSQL schema table:", err.message);
         });
@@ -101,6 +118,7 @@ async function getMeetings() {
                 subject: row.subject,
                 panelistEmail: row.panelist_email,
                 candidateEmail: row.candidate_email,
+                organizerEmail: row.organizer_email,
                 startTime: row.start_time ? new Date(row.start_time).toISOString() : null,
                 endTime: row.end_time ? new Date(row.end_time).toISOString() : null,
                 joinUrl: row.join_url,
@@ -142,17 +160,17 @@ async function insertMeeting(m) {
         try {
             const query = `
                 INSERT INTO teams_meetings (
-                    id, event_id, subject, panelist_email, candidate_email, 
+                    id, event_id, subject, panelist_email, candidate_email, organizer_email,
                     start_time, end_time, join_url, status, created_at, is_simulated, logs
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             `;
             const values = [
-                m.id, m.eventId, m.subject, m.panelistEmail, m.candidateEmail,
+                m.id, m.eventId, m.subject, m.panelistEmail, m.candidateEmail, m.organizerEmail || null,
                 new Date(m.startTime), new Date(m.endTime), m.joinUrl, m.status,
                 new Date(m.createdAt), m.isSimulated, JSON.stringify(m.logs)
             ];
             await pool.query(query, values);
-            console.log(`Meeting record ${m.id} saved to PostgreSQL.`);
+            console.log(`Meeting record ${m.id} saved to PostgreSQL (organizer: ${m.organizerEmail}).`);
         } catch (err) {
             console.error(`Error inserting meeting ${m.id} in PostgreSQL:`, err.message);
             throw err;
@@ -189,6 +207,7 @@ async function updateMeeting(id, updates) {
                 else if (key === 'endTime') colName = 'end_time';
                 else if (key === 'joinUrl') colName = 'join_url';
                 else if (key === 'isSimulated') colName = 'is_simulated';
+                else if (key === 'organizerEmail') colName = 'organizer_email';
                 else if (key === 'transcriptText') colName = 'transcript_text';
                 else if (key === 'transcriptPath') colName = 'transcript_path';
                 else if (key === 'recordingPath') colName = 'recording_path';
@@ -443,12 +462,76 @@ async function sendGraphEmail(token, senderEmail, recipientEmail, subject, htmlC
     }
 }
 
+// Helper: Send a 1:1 Teams chat notification to a user via Microsoft Graph API
+// Requires Chat.Create and ChatMessage.Send application permissions with Admin Consent.
+async function sendTeamsNotification(token, senderEmail, recipientEmail, messageHtml) {
+    try {
+        console.log(`Sending Teams chat notification to ${recipientEmail}...`);
+
+        // Step 1: Create or find a 1:1 chat between sender and recipient
+        const chatPayload = {
+            chatType: "oneOnOne",
+            members: [
+                {
+                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                    roles: ["owner"],
+                    "user@odata.bind": `https://graph.microsoft.com/v1.0/users('${senderEmail}')`
+                },
+                {
+                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                    roles: ["owner"],
+                    "user@odata.bind": `https://graph.microsoft.com/v1.0/users('${recipientEmail}')`
+                }
+            ]
+        };
+
+        const chatRes = await axios.post('https://graph.microsoft.com/v1.0/chats', chatPayload, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const chatId = chatRes.data.id;
+        console.log(`Teams 1:1 chat created/found with ID: ${chatId}`);
+
+        // Step 2: Send a message to the chat
+        const msgPayload = {
+            body: {
+                contentType: "html",
+                content: messageHtml
+            }
+        };
+
+        await axios.post(`https://graph.microsoft.com/v1.0/chats/${chatId}/messages`, msgPayload, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        console.log(`Successfully sent Teams chat notification to ${recipientEmail}`);
+        return true;
+    } catch (err) {
+        console.warn(`Failed to send Teams notification to ${recipientEmail}:`, err.response ? JSON.stringify(err.response.data) : err.message);
+        return false;
+    }
+}
+
 app.post('/api/schedule', async (req, res) => {
     const { panelistEmail, candidateEmail, subject, startTime, endTime } = req.body;
 
     if (!panelistEmail || !candidateEmail || !subject || !startTime || !endTime) {
         return res.status(400).json({ error: "Missing required scheduling fields." });
     }
+
+    // Parse panelistEmail as a comma-separated list
+    const panelists = panelistEmail.split(',').map(e => e.trim()).filter(Boolean);
+    if (panelists.length === 0) {
+        return res.status(400).json({ error: "At least one valid panelist email must be provided." });
+    }
+
+    const primaryPanelist = panelists[0];
 
     // Format times to YYYY-MM-DDTHH:MM:SS (Graph API requires seconds)
     let formattedStart = startTime;
@@ -464,194 +547,205 @@ app.post('/api/schedule', async (req, res) => {
         console.log(`Fetching access token for calendar block...`);
         const token = await getGraphAccessToken();
 
-        let organizerEmail = panelistEmail;
-        let attendeesList = [
+        const defaultOrganizer = process.env.DEFAULT_PANELIST_EMAIL;
+
+        // STRATEGY: Always schedule via the central organizer (DEFAULT_PANELIST_EMAIL).
+        // This ensures ALL panelists receive a real meeting INVITATION from Exchange,
+        // which automatically triggers a Teams Activity notification for each panelist.
+        // If no DEFAULT_PANELIST_EMAIL is configured, fall back to the primary panelist.
+        const organizerEmail = defaultOrganizer || primaryPanelist;
+
+        console.log(`Using central organizer: ${organizerEmail} to ensure Teams Activity notifications are sent to all panelists.`);
+
+        // All panelists + candidate are added as REQUIRED ATTENDEES.
+        // This is the key change: even the primary panelist is an attendee (not the organizer),
+        // so they receive an invitation and get a Teams Activity notification.
+        const attendeesList = [
             {
-                emailAddress: {
-                    address: candidateEmail,
-                    name: "Candidate"
-                },
+                emailAddress: { address: candidateEmail, name: "Candidate" },
                 type: "required"
-            }
+            },
+            ...panelists.map(email => ({
+                emailAddress: { address: email, name: "Interviewer" },
+                type: "required"
+            }))
         ];
+
+
+        let response;
+
+        let onlineMeetingId = null;
+        let joinUrl = null;
+        let calendarEventId = null;
+
+        // ============================================================
+        // STEP 1: Create Teams Online Meeting with auto-recording ON
+        // Creating via /onlineMeetings first gives us the real meeting ID
+        // immediately, and lets us set recordAutomatically + allowTranscription.
+        // ============================================================
+        try {
+            console.log(`Creating Teams online meeting via Graph API for organizer: ${organizerEmail}...`);
+            const onlineMeetingPayload = {
+                subject: subject,
+                startDateTime: formattedStart,
+                endDateTime: formattedEnd,
+                recordAutomatically: true,
+                allowTranscription: true,
+                participants: {
+                    organizer: {
+                        upn: organizerEmail,
+                        role: "presenter"
+                    },
+                    attendees: [
+                        { upn: candidateEmail, role: "attendee" },
+                        ...panelists.map(email => ({ upn: email, role: "presenter" }))
+                    ]
+                }
+            };
+
+            const omRes = await axios.post(
+                `https://graph.microsoft.com/v1.0/users/${organizerEmail}/onlineMeetings`,
+                onlineMeetingPayload,
+                { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } }
+            );
+
+            onlineMeetingId = omRes.data.id;
+            joinUrl = omRes.data.joinWebUrl || omRes.data.joinUrl;
+            console.log(`✅ Teams online meeting created! ID: ${onlineMeetingId}`);
+            console.log(`✅ Auto-recording: ${omRes.data.recordAutomatically}, Auto-transcription: ${omRes.data.allowTranscription}`);
+        } catch (omErr) {
+            console.warn(`Could not create standalone onlineMeeting (will fall back to calendar event):`, omErr.response ? JSON.stringify(omErr.response.data) : omErr.message);
+        }
+
+        // ============================================================
+        // STEP 2: Create the Calendar Event (sends invitations to attendees)
+        // If we got a joinUrl from Step 1, embed it. Otherwise let Graph
+        // generate a new Teams link via isOnlineMeeting: true.
+        // ============================================================
+        const eventBody = `
+        <div style="font-family: Segoe UI, sans-serif; padding: 20px;">
+            <h2 style="color: #6264A7;">📅 Interview Scheduled</h2>
+            <p>You have been invited to a Microsoft Teams interview.</p>
+            <table style="border-collapse: collapse; width: 100%;">
+                <tr><td style="padding: 6px; font-weight: bold; color: #555;">Subject:</td><td style="padding: 6px;">${subject}</td></tr>
+                <tr><td style="padding: 6px; font-weight: bold; color: #555;">Candidate:</td><td style="padding: 6px;">${candidateEmail}</td></tr>
+                <tr><td style="padding: 6px; font-weight: bold; color: #555;">Interviewer(s):</td><td style="padding: 6px;">${panelists.join(', ')}</td></tr>
+            </table>
+            <p style="margin-top: 16px;">⚠️ <strong>Recording and transcription will start automatically</strong> when the meeting begins.</p>
+            <p style="color: #888; font-size: 12px;">Scheduled by Elasticrew ATS</p>
+        </div>`;
 
         const eventPayload = {
             subject: subject,
-            body: {
-                contentType: "HTML",
-                content: `Hi, thank you for joining the interview loop. Please join the Microsoft Teams Meeting via the link below.`
-            },
-            start: {
-                dateTime: formattedStart,
-                timeZone: "India Standard Time"
-            },
-            end: {
-                dateTime: formattedEnd,
-                timeZone: "India Standard Time"
-            },
-            location: {
-                displayName: "Microsoft Teams Meeting"
-            },
+            body: { contentType: "HTML", content: eventBody },
+            start: { dateTime: formattedStart, timeZone: "India Standard Time" },
+            end: { dateTime: formattedEnd, timeZone: "India Standard Time" },
+            location: { displayName: "Microsoft Teams Meeting" },
             attendees: attendeesList,
             isOnlineMeeting: true,
             onlineMeetingProvider: "teamsForBusiness"
         };
 
-        let response;
-        let scheduledDirectly = true;
-        const defaultOrganizer = process.env.DEFAULT_PANELIST_EMAIL;
-
         try {
-            console.log(`Attempting to schedule event directly on panelist's calendar: ${panelistEmail}...`);
-            response = await axios.post(`https://graph.microsoft.com/v1.0/users/${panelistEmail}/events`, eventPayload, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                }
-            });
-            organizerEmail = panelistEmail;
-            scheduledDirectly = true;
-            console.log(`Successfully scheduled event directly on panelist's calendar!`);
+            response = await axios.post(
+                `https://graph.microsoft.com/v1.0/users/${organizerEmail}/events`,
+                eventPayload,
+                { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } }
+            );
+            calendarEventId = response.data.id;
+            // If Step 1 failed, fall back to the calendar event's join URL
+            if (!joinUrl) {
+                joinUrl = response.data.onlineMeeting?.joinUrl || response.data.onlineMeetingInfo?.joinUrl;
+            }
+            // If Step 1 failed, fall back to a placeholder meeting ID
+            if (!onlineMeetingId) {
+                onlineMeetingId = 'meet-' + calendarEventId;
+                console.log(`Using fallback meeting ID from calendar event: ${onlineMeetingId}`);
+            }
+            console.log(`✅ Calendar event created (${calendarEventId}). All ${panelists.length} panelist(s) will receive Teams Activity notifications.`);
         } catch (apiErr) {
-            console.warn(`Direct scheduling on panelist calendar ${panelistEmail} failed:`, apiErr.response ? apiErr.response.data : apiErr.message);
-            
-            if (defaultOrganizer && defaultOrganizer.toLowerCase() !== panelistEmail.toLowerCase()) {
-                console.log(`Attempting fallback schedule via central organizer: ${defaultOrganizer}...`);
-                organizerEmail = defaultOrganizer;
-                scheduledDirectly = false;
-                
-                // Add panelist as attendee since we are scheduling via central organizer
-                if (!attendeesList.some(a => a.emailAddress.address.toLowerCase() === panelistEmail.toLowerCase())) {
-                    attendeesList.push({
-                        emailAddress: { address: panelistEmail, name: "Interviewer" },
-                        type: "required"
-                    });
-                }
-                
-                eventPayload.attendees = attendeesList;
-                response = await axios.post(`https://graph.microsoft.com/v1.0/users/${defaultOrganizer}/events`, eventPayload, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    }
-                });
-                console.log(`Successfully scheduled via fallback organizer!`);
-            } else {
-                throw apiErr;
-            }
+            console.error(`Failed to create calendar event via organizer ${organizerEmail}:`, apiErr.response ? apiErr.response.data : apiErr.message);
+            throw apiErr;
         }
 
-        const joinUrl = response.data.onlineMeeting.joinUrl;
-        let onlineMeetingId = null;
-
-        try {
-            console.log(`Resolving joinUrl to get Teams onlineMeetingId...`);
-            const filterUrl = `https://graph.microsoft.com/v1.0/users/${organizerEmail}/onlineMeetings?$filter=joinWebUrl eq '${encodeURIComponent(joinUrl)}'`;
-            const filterRes = await axios.get(filterUrl, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (filterRes.data.value && filterRes.data.value.length > 0) {
-                onlineMeetingId = filterRes.data.value[0].id;
-                console.log(`Resolved Teams onlineMeetingId: ${onlineMeetingId}`);
+        // ============================================================
+        // STEP 3: If we have the real onlineMeetingId from Step 1,
+        // PATCH it to confirm auto-recording & transcription settings.
+        // ============================================================
+        if (onlineMeetingId && !onlineMeetingId.startsWith('meet-')) {
+            try {
+                console.log(`Confirming auto-recording/transcription via PATCH on onlineMeeting ${onlineMeetingId}...`);
+                await axios.patch(
+                    `https://graph.microsoft.com/v1.0/users/${organizerEmail}/onlineMeetings/${onlineMeetingId}`,
+                    { recordAutomatically: true, allowTranscription: true },
+                    { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } }
+                );
+                console.log(`✅ Auto-recording and auto-transcription confirmed ON for meeting ${onlineMeetingId}.`);
+            } catch (patchErr) {
+                console.warn(`PATCH onlineMeeting settings warning (non-fatal):`, patchErr.response ? JSON.stringify(patchErr.response.data) : patchErr.message);
             }
-        } catch (filterErr) {
-            console.warn("Failed to resolve onlineMeetingId via filter:", filterErr.response ? filterErr.response.data : filterErr.message);
-        }
-
-        // Fallback to event ID if resolving failed, so the DB insert never crashes
-        if (!onlineMeetingId) {
-            onlineMeetingId = 'meet-' + response.data.id;
-            console.log(`Using fallback meeting ID: ${onlineMeetingId}`);
         }
 
         const newMeeting = {
             id: onlineMeetingId,
-            eventId: response.data.id, // Calendar Event ID
+            eventId: calendarEventId || response.data.id,
             subject: subject,
             panelistEmail: panelistEmail,
             candidateEmail: candidateEmail,
+            organizerEmail: organizerEmail,
             startTime: formattedStart,
             endTime: formattedEnd,
             joinUrl: joinUrl,
             status: "Scheduled",
             createdAt: new Date().toISOString(),
             isSimulated: false,
-            logs: [{ time: new Date().toISOString(), status: "Scheduled", message: "Meeting scheduled on Outlook calendar." }]
+            logs: [{
+                time: new Date().toISOString(),
+                status: "Scheduled",
+                message: `Meeting created by ${organizerEmail}. Auto-recording & transcription: ON. Invitations sent to ${panelists.length} panelist(s).`
+            }]
         };
 
-        // Auto-accept meeting on behalf of panelist if scheduled via central organizer
-        if (!scheduledDirectly) {
-            try {
-                const iCalUId = response.data.iCalUId;
-                console.log(`Attempting to auto-accept meeting on behalf of panelist ${panelistEmail} (iCalUId: ${iCalUId})...`);
-                // Wait a brief moment for Exchange to sync the event copy to the panelist's mailbox
-                await new Promise(resolve => setTimeout(resolve, 2500));
-                
-                const findUrl = `https://graph.microsoft.com/v1.0/users/${panelistEmail}/events?$filter=iCalUId eq '${iCalUId}'`;
-                const findRes = await axios.get(findUrl, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                
-                if (findRes.data.value && findRes.data.value.length > 0) {
-                    const panelistEventId = findRes.data.value[0].id;
-                    const acceptUrl = `https://graph.microsoft.com/v1.0/users/${panelistEmail}/events/${panelistEventId}/accept`;
-                    await axios.post(acceptUrl, {
-                        comment: "Accepted automatically by SyncTeams platform.",
-                        sendResponse: true
-                    }, {
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
-                        }
-                    });
-                    console.log(`Successfully auto-accepted event on behalf of panelist ${panelistEmail}. Calendar blocked!`);
-                    newMeeting.logs.push({
-                        time: new Date().toISOString(),
-                        status: "Calendar Blocked",
-                        message: `Successfully auto-accepted event on behalf of panelist ${panelistEmail} to block their calendar.`
-                    });
-                } else {
-                    console.warn(`Could not find event copy on panelist ${panelistEmail}'s calendar to auto-accept.`);
-                }
-            } catch (acceptErr) {
-                console.warn(`Auto-accept failed for panelist ${panelistEmail}:`, acceptErr.response ? acceptErr.response.data : acceptErr.message);
-            }
-        } else {
-            console.log(`Event created directly on panelist's calendar. Calendar blocked!`);
-            newMeeting.logs.push({
-                time: new Date().toISOString(),
-                status: "Calendar Blocked",
-                message: `Successfully created event directly on panelist ${panelistEmail}'s calendar to block it.`
-            });
-        }
+        // AUTO-ACCEPT: Accept invitations on behalf of all panelists so their calendars are blocked.
+        // sendResponse: false keeps invitation visible in Teams Activity feed.
+        try {
+            const iCalUId = response.data.iCalUId;
+            console.log(`Auto-accepting invites for all panelists: ${panelists.join(', ')} ...`);
+            // Wait for Exchange to sync invites to attendee mailboxes
+            await new Promise(resolve => setTimeout(resolve, 4000));
 
-        // Attempt to configure auto-recording on Microsoft Graph onlineMeeting settings
-        if (onlineMeetingId && !onlineMeetingId.startsWith('meet-')) {
-            try {
-                console.log(`Configuring recordAutomatically: true on Microsoft Graph for meeting ${onlineMeetingId}...`);
-                const patchUrl = `https://graph.microsoft.com/v1.0/users/${organizerEmail}/onlineMeetings/${onlineMeetingId}`;
-                await axios.patch(patchUrl, {
-                    recordAutomatically: true
-                }, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
+            for (const email of panelists) {
+                try {
+                    const findUrl = `https://graph.microsoft.com/v1.0/users/${email}/events?$filter=iCalUId eq '${iCalUId}'`;
+                    const findRes = await axios.get(findUrl, { headers: { 'Authorization': `Bearer ${token}` } });
+
+                    if (findRes.data.value && findRes.data.value.length > 0) {
+                        const panelistEventId = findRes.data.value[0].id;
+                        await axios.post(
+                            `https://graph.microsoft.com/v1.0/users/${email}/events/${panelistEventId}/accept`,
+                            { sendResponse: false },
+                            { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } }
+                        );
+                        console.log(`✅ Calendar blocked for panelist ${email}.`);
+                        newMeeting.logs.push({
+                            time: new Date().toISOString(),
+                            status: "Calendar Blocked",
+                            message: `Calendar blocked for ${email}. Teams Activity notification preserved.`
+                        });
+                    } else {
+                        console.warn(`Could not find invite for panelist ${email} — may not be in the same tenant.`);
+                        newMeeting.logs.push({
+                            time: new Date().toISOString(),
+                            status: "Calendar Block Skipped",
+                            message: `No invite found for ${email} (may be external/different tenant).`
+                        });
                     }
-                });
-                console.log(`Successfully configured auto-recording/transcribing.`);
-                newMeeting.logs.push({
-                    time: new Date().toISOString(),
-                    status: "Auto-Record Configured",
-                    message: "Successfully enabled auto-recording settings for this Teams meeting on Microsoft Graph."
-                });
-            } catch (patchErr) {
-                console.warn("Failed to patch onlineMeeting recordAutomatically settings:", patchErr.response ? patchErr.response.data : patchErr.message);
-                newMeeting.logs.push({
-                    time: new Date().toISOString(),
-                    status: "Auto-Record Warning",
-                    message: `Auto-record configuration failed: ${patchErr.response ? JSON.stringify(patchErr.response.data) : patchErr.message}`
-                });
+                } catch (singleAcceptErr) {
+                    console.warn(`Auto-accept failed for ${email}:`, singleAcceptErr.response ? singleAcceptErr.response.data : singleAcceptErr.message);
+                }
             }
+        } catch (acceptErr) {
+            console.warn(`Auto-accept process failed:`, acceptErr.message);
         }
 
         // Send Email Notifications
@@ -682,6 +776,10 @@ app.post('/api/schedule', async (req, res) => {
                             <tr>
                                 <td style="padding: 6px 0; font-size: 14px; color: #94a3b8; font-weight: 500;">Candidate:</td>
                                 <td style="padding: 6px 0; font-size: 14px; color: #3b82f6; font-weight: 600;"><a href="mailto:${candidateEmail}" style="color: #3b82f6; text-decoration: none;">${candidateEmail}</a></td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; font-size: 14px; color: #94a3b8; font-weight: 500;">Panelists:</td>
+                                <td style="padding: 6px 0; font-size: 14px; color: #f1f5f9;">${panelists.join(', ')}</td>
                             </tr>
                             <tr>
                                 <td style="padding: 6px 0; font-size: 14px; color: #94a3b8; font-weight: 500;">Start Time:</td>
@@ -724,6 +822,10 @@ app.post('/api/schedule', async (req, res) => {
                                 <td style="padding: 6px 0; font-size: 14px; color: #f1f5f9; font-weight: 600;">${subject}</td>
                             </tr>
                             <tr>
+                                <td style="padding: 6px 0; font-size: 14px; color: #94a3b8; font-weight: 500;">Interviewer(s):</td>
+                                <td style="padding: 6px 0; font-size: 14px; color: #f1f5f9;">${panelists.join(', ')}</td>
+                            </tr>
+                            <tr>
                                 <td style="padding: 6px 0; font-size: 14px; color: #94a3b8; font-weight: 500;">Start Time:</td>
                                 <td style="padding: 6px 0; font-size: 14px; color: #f1f5f9;">${startTimeFormatted} (IST)</td>
                             </tr>
@@ -744,16 +846,47 @@ app.post('/api/schedule', async (req, res) => {
                 </div>
             `;
 
-            // Fire and forget email sends
-            sendGraphEmail(token, senderEmail, panelistEmail, `Interview Scheduled: ${subject}`, panelistHtml);
+            // Fire and forget email sends to all panelists and candidate
+            for (const email of panelists) {
+                sendGraphEmail(token, senderEmail, email, `Interview Scheduled: ${subject}`, panelistHtml);
+            }
             sendGraphEmail(token, senderEmail, candidateEmail, `Interview Scheduled: ${subject}`, candidateHtml);
+
             newMeeting.logs.push({
                 time: new Date().toISOString(),
                 status: "Notifications Sent",
-                message: `Email notifications dispatched from ${senderEmail} to Panelist (${panelistEmail}) and Candidate (${candidateEmail}).`
+                message: `Email notifications dispatched from ${senderEmail} to Panelists (${panelists.join(', ')}) and Candidate (${candidateEmail}).`
+            });
+
+            // ---- Teams Activity Notifications ----
+            // Build a rich Teams chat message (HTML) for panelists
+            const teamsMessageHtml = `
+<b>🗓️ Interview Scheduled — ${subject}</b><br><br>
+<table>
+  <tr><td><b>Candidate:</b></td><td>${candidateEmail}</td></tr>
+  <tr><td><b>Panelist(s):</b></td><td>${panelists.join(', ')}</td></tr>
+  <tr><td><b>Start:</b></td><td>${startTimeFormatted} (IST)</td></tr>
+  <tr><td><b>End:</b></td><td>${endTimeFormatted} (IST)</td></tr>
+</table><br>
+Your calendar has been blocked automatically. Click below to join the meeting when the time comes.<br><br>
+<a href="${joinUrl}"><b>▶ Join Teams Interview</b></a>
+            `.trim();
+
+            // Send Teams 1:1 message to each panelist (fire and forget)
+            for (const email of panelists) {
+                // Skip if sender and recipient are the same — Teams cannot 1:1 message itself
+                if (email.toLowerCase() !== senderEmail.toLowerCase()) {
+                    sendTeamsNotification(token, senderEmail, email, teamsMessageHtml);
+                }
+            }
+
+            newMeeting.logs.push({
+                time: new Date().toISOString(),
+                status: "Teams Notification Sent",
+                message: `Teams Activity notifications dispatched to Panelists (${panelists.filter(e => e.toLowerCase() !== senderEmail.toLowerCase()).join(', ')}).`
             });
         } catch (emailErr) {
-            console.warn("Failed during email notification dispatch:", emailErr.message);
+            console.warn("Failed during email/Teams notification dispatch:", emailErr.message);
         }
 
         await insertMeeting(newMeeting);
@@ -764,6 +897,111 @@ app.post('/api/schedule', async (req, res) => {
             error: "Failed to schedule Teams meeting",
             details: error.response ? error.response.data : error.message
         });
+    }
+});
+
+// ==========================================
+// 3b. ENDPOINT: LIST PAST RECORDINGS FROM ONEDRIVE
+// ==========================================
+app.get('/api/past-recordings', async (req, res) => {
+    try {
+        const organizerEmail = req.query.email || process.env.DEFAULT_PANELIST_EMAIL;
+        if (!organizerEmail) {
+            return res.status(400).json({ error: "No panelist email provided and DEFAULT_PANELIST_EMAIL is not configured." });
+        }
+
+        console.log(`Listing past recordings from OneDrive for email: ${organizerEmail}`);
+        const token = await getGraphAccessToken();
+        const allRecordings = [];
+
+        // Primary: list from OneDrive/Recordings folder (Teams saves here)
+        try {
+            const driveRes = await axios.get(
+                `https://graph.microsoft.com/v1.0/users/${organizerEmail}/drive/root:/Recordings:/children?$orderby=lastModifiedDateTime desc&$top=50`,
+                { headers: { 'Authorization': `Bearer ${token}` } }
+            );
+            if (driveRes.data.value) {
+                for (const item of driveRes.data.value) {
+                    if (item.file && (item.name.endsWith('.mp4') || item.name.endsWith('.mp3'))) {
+                        allRecordings.push({
+                            id: item.id,
+                            name: item.name,
+                            size: item.size,
+                            lastModified: item.lastModifiedDateTime,
+                            webUrl: item.webUrl,
+                            source: 'OneDrive/Recordings'
+                        });
+                    }
+                }
+            }
+        } catch (driveErr) {
+            console.warn(`Could not list /Recordings folder for ${organizerEmail}:`, driveErr.response?.data?.error?.message || driveErr.message);
+        }
+
+        // Fallback: search entire OneDrive for .mp4 files
+        try {
+            const searchRes = await axios.get(
+                `https://graph.microsoft.com/v1.0/users/${organizerEmail}/drive/search(q='.mp4')?$orderby=lastModifiedDateTime desc&$top=30`,
+                { headers: { 'Authorization': `Bearer ${token}` } }
+            );
+            if (searchRes.data.value) {
+                for (const item of searchRes.data.value) {
+                    if (!allRecordings.find(r => r.id === item.id) && item.file && item.name.endsWith('.mp4')) {
+                        allRecordings.push({
+                            id: item.id,
+                            name: item.name,
+                            size: item.size,
+                            lastModified: item.lastModifiedDateTime,
+                            webUrl: item.webUrl,
+                            source: 'OneDrive (Search)'
+                        });
+                    }
+                }
+            }
+        } catch (searchErr) {
+            console.warn(`Drive search fallback failed for ${organizerEmail}:`, searchErr.response?.data?.error?.message || searchErr.message);
+        }
+
+        console.log(`Found ${allRecordings.length} past recordings for ${organizerEmail}`);
+        res.json({ organizer: organizerEmail, recordings: allRecordings });
+
+    } catch (error) {
+        console.error("Failed to list past recordings:", error.response ? error.response.data : error.message);
+        res.status(500).json({ error: "Failed to list past recordings", details: error.response ? error.response.data : error.message });
+    }
+});
+
+// ==========================================
+// 3c. ENDPOINT: GET DIRECT PLAYBACK URL
+// Fetches pre-signed downloadUrl directly from OneDrive for streaming
+// ==========================================
+app.post('/api/fetch-past-recording', async (req, res) => {
+    const { fileId, fileName, email } = req.body;
+    if (!fileId || !fileName) return res.status(400).json({ error: "fileId and fileName are required." });
+
+    const organizerEmail = email || process.env.DEFAULT_PANELIST_EMAIL;
+    if (!organizerEmail) {
+        return res.status(400).json({ error: "No panelist email provided." });
+    }
+
+    try {
+        const token = await getGraphAccessToken();
+        console.log(`Generating pre-signed URL for past recording: ${fileName} from ${organizerEmail}'s OneDrive...`);
+
+        const metaRes = await axios.get(
+            `https://graph.microsoft.com/v1.0/users/${organizerEmail}/drive/items/${fileId}`,
+            { headers: { 'Authorization': `Bearer ${token}` } }
+        );
+
+        const downloadUrl = metaRes.data['@microsoft.graph.downloadUrl'];
+        if (!downloadUrl) return res.status(404).json({ error: "Could not get streaming download URL for this file." });
+
+        console.log(`✅ Direct pre-signed stream URL generated successfully.`);
+        res.json({ success: true, downloadUrl, fileName });
+
+    } catch (error) {
+        console.error("Failed to generate stream URL:", error.response ? error.response.data : error.message);
+        res.status(500).json({ error: "Failed to generate play URL", details: error.response ? error.response.data : error.message });
     }
 });
 
@@ -845,57 +1083,83 @@ app.post('/teams-webhook', async (req, res) => {
         console.warn("Unauthorized webhook payload. ClientState mismatch:", clientState);
         return res.status(403).send("Forbidden");
     }
-
     const resourceData = notification.resourceData;
-    const meetingId = resourceData?.meetingId || resourceData?.id;
-    const organizerId = resourceData?.organizerId;
+    
+    // Extract real Teams meetingId from resource URI
+    // e.g. communications/onlineMeetings('MSpkM2...')/transcripts('...')
+    const resource = notification.resource || resourceData?.['@odata.id'] || '';
+    const meetingIdMatch = resource.match(/onlineMeetings\('([^']+)'\)/);
+    const meetingId = meetingIdMatch ? meetingIdMatch[1] : (resourceData?.meetingId || resourceData?.id);
 
-    if (!meetingId || !organizerId) {
-        console.log("Missing meetingId or organizerId in webhook. Cannot process.");
-        return res.status(202).send("Missing IDs, cannot process yet");
+    if (!meetingId) {
+        console.warn("Could not extract meetingId from webhook notification resource:", resource);
+        return res.status(202).send("Missing meeting ID, cannot process");
     }
 
+    let organizerId = resourceData?.organizerId;
     const meetings = await getMeetings();
     let meeting = meetings.find(m => m.id === meetingId);
-    
-    if (!meeting) {
-        console.log(`Webhook received for meeting ID ${meetingId} which is not directly tracked. Attempting to resolve joinWebUrl from Graph...`);
-        try {
+    let resolvedOrganizer = organizerId;
+
+    if (!resolvedOrganizer) {
+        // Smart UPN/Email resolution for the organizer
+        if (meeting && (meeting.organizerEmail || meeting.panelistEmail)) {
+            resolvedOrganizer = meeting.organizerEmail || meeting.panelistEmail;
+            console.log(`Resolved organizer from database: ${resolvedOrganizer} for meeting ID: ${meetingId}`);
+        } else {
+            // Collect all possible organizers in our tenant (default email and any scheduled organizers/panelists)
+            const dbOrganizers = meetings.map(m => m.organizerEmail || m.panelistEmail).filter(Boolean);
+            const candidates = [...new Set([
+                process.env.DEFAULT_PANELIST_EMAIL,
+                ...dbOrganizers,
+                'nadeem.aehmad@kadellabs.com',
+                'mahima.dangi@kadellabs.com',
+                'achyut.pancholi@kadellabs.com'
+            ])].filter(Boolean);
+
+            console.log(`Organizer UPN not present in webhook. Scanning candidate organizers to locate meeting: ${candidates.join(', ')}`);
             const token = await getGraphAccessToken();
-            const url = `https://graph.microsoft.com/v1.0/users/${organizerId}/onlineMeetings/${meetingId}`;
-            const onlineMeetRes = await axios.get(url, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const joinWebUrl = onlineMeetRes.data?.joinWebUrl;
-            if (joinWebUrl) {
-                console.log(`Resolved joinWebUrl: ${joinWebUrl}. Searching database for matching joinUrl...`);
-                const matchedMeeting = meetings.find(m => m.joinUrl && m.joinUrl.toLowerCase() === joinWebUrl.toLowerCase());
-                if (matchedMeeting) {
-                    const oldId = matchedMeeting.id;
-                    console.log(`Found matching scheduled meeting! Previous ID: ${oldId}. Mapping to real Teams onlineMeetingId: ${meetingId}`);
-                    
-                    // Update database record to use the real Teams onlineMeetingId instead of fallback ID
-                    await updateMeetingIdInDb(oldId, meetingId);
-                    
-                    // Update the in-memory object ID and log
-                    matchedMeeting.id = meetingId;
-                    matchedMeeting.logs.push({
-                        time: new Date().toISOString(),
-                        status: "ID Resolved",
-                        message: `Mapped fallback ID ${oldId} to real Teams onlineMeetingId ${meetingId} via webhook resolution.`
+            
+            for (const org of candidates) {
+                try {
+                    const testUrl = `https://graph.microsoft.com/v1.0/users/${org}/onlineMeetings/${meetingId}`;
+                    const onlineMeetRes = await axios.get(testUrl, {
+                        headers: { 'Authorization': `Bearer ${token}` }
                     });
-                    await updateMeeting(meetingId, { logs: matchedMeeting.logs });
                     
-                    meeting = matchedMeeting;
-                } else {
-                    console.log(`No scheduled meeting matches joinWebUrl: ${joinWebUrl}`);
+                    const joinWebUrl = onlineMeetRes.data?.joinWebUrl;
+                    if (joinWebUrl) {
+                        resolvedOrganizer = org;
+                        console.log(`✅ Webhook resolved organizer: ${resolvedOrganizer} for meeting ID: ${meetingId}`);
+                        
+                        // Check if we can find a matching scheduled meeting with a fallback ID in the database
+                        const matchedMeeting = meetings.find(m => m.joinUrl && m.joinUrl.toLowerCase() === joinWebUrl.toLowerCase());
+                        if (matchedMeeting) {
+                            const oldId = matchedMeeting.id;
+                            console.log(`Found matching scheduled meeting! Previous ID: ${oldId}. Mapping to real Teams onlineMeetingId: ${meetingId}`);
+                            
+                            await updateMeetingIdInDb(oldId, meetingId);
+                            matchedMeeting.id = meetingId;
+                            matchedMeeting.logs.push({
+                                time: new Date().toISOString(),
+                                status: "ID Resolved",
+                                message: `Mapped fallback ID ${oldId} to real Teams onlineMeetingId ${meetingId} via webhook resolution.`
+                            });
+                            await updateMeeting(meetingId, { logs: matchedMeeting.logs });
+                            meeting = matchedMeeting;
+                        }
+                        break;
+                    }
+                } catch (err) {
+                    // Fail silently, try next candidate
                 }
-            } else {
-                console.warn(`Graph response for meeting ${meetingId} did not contain joinWebUrl.`);
             }
-        } catch (resolveErr) {
-            console.error(`Failed to resolve meeting ${meetingId} from Graph:`, resolveErr.response ? resolveErr.response.data : resolveErr.message);
         }
+    }
+
+    if (!resolvedOrganizer) {
+        console.warn(`Could not resolve organizer for meeting ID: ${meetingId}. Cannot fetch artifacts.`);
+        return res.status(202).send("Missing organizer, cannot process yet");
     }
 
     if (meeting) {
@@ -903,7 +1167,7 @@ app.post('/teams-webhook', async (req, res) => {
         meeting.logs.push({
             time: new Date().toISOString(),
             status: "Webhook Notification Received",
-            message: `Graph Webhook notified of completed meeting artifacts. Organizer ID: ${organizerId}`
+            message: `Graph Webhook notified of completed meeting artifacts. Organizer UPN: ${resolvedOrganizer}`
         });
         
         await updateMeeting(meetingId, {
@@ -911,8 +1175,8 @@ app.post('/teams-webhook', async (req, res) => {
             logs: meeting.logs
         });
 
-        console.log(`Starting fetch of assets for meeting ID: ${meetingId}`);
-        fetchArtifacts(organizerId, meetingId).catch(err => {
+        console.log(`Starting fetch of assets for meeting ID: ${meetingId} via organizer: ${resolvedOrganizer}`);
+        fetchArtifacts(resolvedOrganizer, meetingId).catch(err => {
             console.error(`Error in fetchArtifacts for meeting ${meetingId}:`, err);
         });
     } else {
@@ -943,11 +1207,47 @@ async function fetchArtifacts(organizerId, meetingId) {
 
     try {
         const token = await getGraphAccessToken();
-        const baseUrl = `https://graph.microsoft.com/v1.0/users/${organizerId}/onlineMeetings/${meetingId}`;
+
+        // Smart organizer resolution:
+        // 1. Use stored organizerEmail from DB (most reliable — set when meeting was scheduled)
+        // 2. Fallback to webhook organizerId GUID
+        // 3. Last resort: DEFAULT_PANELIST_EMAIL from env
+        const candidateOrganizers = [
+            meeting.organizerEmail,
+            process.env.DEFAULT_PANELIST_EMAIL,
+            organizerId  // GUID from webhook — works if it matches a user in the tenant
+        ].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i); // deduplicate
+
+        console.log(`Attempting to fetch artifacts for meeting ${meetingId}. Will try organizers: ${candidateOrganizers.join(', ')}`);
+
+        let baseUrl = null;
+        let resolvedOrganizer = null;
+
+        // Find the first organizer that can access this meeting
+        for (const org of candidateOrganizers) {
+            try {
+                const testUrl = `https://graph.microsoft.com/v1.0/users/${org}/onlineMeetings/${meetingId}`;
+                await axios.get(testUrl, { headers: { 'Authorization': `Bearer ${token}` } });
+                baseUrl = testUrl;
+                resolvedOrganizer = org;
+                console.log(`✅ Successfully accessed meeting via organizer: ${resolvedOrganizer}`);
+                break;
+            } catch (testErr) {
+                console.warn(`Organizer ${org} cannot access meeting ${meetingId}: ${testErr.response?.status || testErr.message}`);
+            }
+        }
+
+        if (!baseUrl) {
+            throw new Error(`None of the candidate organizers [${candidateOrganizers.join(', ')}] could access meeting ${meetingId}.`);
+        }
+
+        const meetingBaseUrl = `https://graph.microsoft.com/v1.0/users/${resolvedOrganizer}/onlineMeetings/${meetingId}`;
+
+
 
         // ---- A. Fetch Transcript ----
         console.log(`Listing transcripts for meeting: ${meetingId}`);
-        const transcriptMeta = await axios.get(`${baseUrl}/transcripts`, {
+        const transcriptMeta = await axios.get(`${meetingBaseUrl}/transcripts`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
@@ -959,7 +1259,7 @@ async function fetchArtifacts(organizerId, meetingId) {
             const transcriptId = transcriptMeta.data.value[0].id;
             console.log(`Downloading transcript: ${transcriptId}`);
             
-            const contentUrl = `${baseUrl}/transcripts/${transcriptId}/content?format=text/vtt`;
+            const contentUrl = `${meetingBaseUrl}/transcripts/${transcriptId}/content?format=text/vtt`;
             const contentResponse = await axios.get(contentUrl, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -997,7 +1297,7 @@ async function fetchArtifacts(organizerId, meetingId) {
 
         // ---- B. Fetch Recording ----
         console.log(`Listing recordings for meeting: ${meetingId}`);
-        const recordingMeta = await axios.get(`${baseUrl}/recordings`, {
+        const recordingMeta = await axios.get(`${meetingBaseUrl}/recordings`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
@@ -1008,7 +1308,7 @@ async function fetchArtifacts(organizerId, meetingId) {
             const recordingId = recordingMeta.data.value[0].id;
             console.log(`Downloading recording binary stream: ${recordingId}`);
             
-            const videoDownloadUrl = `${baseUrl}/recordings/${recordingId}/content`;
+            const videoDownloadUrl = `${meetingBaseUrl}/recordings/${recordingId}/content`;
             const videoFileName = `recording_${meetingId}.mp4`;
             const videoPath = path.join(downloadsDir, videoFileName);
 
@@ -1219,6 +1519,77 @@ app.delete('/api/meetings/:id', async (req, res) => {
     await deleteMeetingFromDb(id);
     res.json({ success: true });
 });
+
+// ==========================================
+// AUTO-RENEW WEBHOOK SUBSCRIPTIONS (every 45 min)
+// ==========================================
+async function autoRenewWebhookSubscriptions() {
+    const webhookBase = process.env.WEBHOOK_BASE_URL;
+    if (!webhookBase) {
+        console.log('[AutoRenew] WEBHOOK_BASE_URL not set — skipping subscription renewal.');
+        return;
+    }
+    try {
+        console.log('[AutoRenew] Renewing Microsoft Graph webhook subscriptions...');
+        const token = await getGraphAccessToken();
+        const subUrl = 'https://graph.microsoft.com/v1.0/subscriptions';
+        const expirationDateTime = new Date(Date.now() + 60000 * 50).toISOString();
+
+        // Step 1: List all existing subscriptions and delete them to avoid 'limit reached' errors
+        try {
+            const listRes = await axios.get(subUrl, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const existing = listRes.data.value || [];
+            console.log(`[AutoRenew] Found ${existing.length} existing subscription(s). Deleting...`);
+            for (const sub of existing) {
+                try {
+                    await axios.delete(`${subUrl}/${sub.id}`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    console.log(`[AutoRenew] Deleted subscription: ${sub.id} (${sub.resource})`);
+                } catch (delErr) {
+                    console.warn(`[AutoRenew] Could not delete subscription ${sub.id}:`, delErr.response ? delErr.response.data : delErr.message);
+                }
+            }
+        } catch (listErr) {
+            console.warn('[AutoRenew] Could not list existing subscriptions:', listErr.response ? listErr.response.data : listErr.message);
+        }
+
+        // Step 2: Create fresh subscriptions
+        const subscriptions = [
+            {
+                changeType: "created",
+                notificationUrl: `${webhookBase}/teams-webhook`,
+                resource: "communications/onlineMeetings/getAllTranscripts",
+                expirationDateTime,
+                clientState: "TeamsIntegrationSyncSecretState"
+            },
+            {
+                changeType: "created",
+                notificationUrl: `${webhookBase}/teams-webhook`,
+                resource: "communications/onlineMeetings/getAllRecordings",
+                expirationDateTime,
+                clientState: "TeamsIntegrationSyncSecretState"
+            }
+        ];
+
+        for (const payload of subscriptions) {
+            await axios.post(subUrl, payload, {
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+            });
+            console.log(`[AutoRenew] ✅ Subscribed to: ${payload.resource}`);
+        }
+        console.log(`[AutoRenew] ✅ All webhook subscriptions renewed. Expires ~${expirationDateTime}. Next renewal in 45 min.`);
+    } catch (err) {
+        console.warn('[AutoRenew] ⚠️ Failed to renew webhook subscriptions:', err.response ? JSON.stringify(err.response.data) : err.message);
+    }
+}
+
+// Renew subscriptions every 45 minutes (subscriptions last 50 min max)
+setInterval(autoRenewWebhookSubscriptions, 45 * 60 * 1000);
+// Also subscribe immediately 10 seconds after server starts (gives server time to fully initialize)
+setTimeout(autoRenewWebhookSubscriptions, 10 * 1000);
 
 // Start Server
 app.listen(PORT, () => {
