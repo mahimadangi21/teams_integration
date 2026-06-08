@@ -1126,15 +1126,29 @@ app.post('/teams-webhook', async (req, res) => {
         } else {
             // Collect all possible organizers in our tenant (default email and any scheduled organizers/panelists)
             const dbOrganizers = meetings.map(m => m.organizerEmail || m.panelistEmail).filter(Boolean);
+            
+            // Also parse Oids from scheduled meetings in the database
+            const dbOids = [];
+            const scheduledMeetings = meetings.filter(m => m.status === 'Scheduled');
+            for (const sm of scheduledMeetings) {
+                if (sm.joinUrl) {
+                    const oidMatch = sm.joinUrl.match(/Oid%22%3a%22([^%"]+)/i) || sm.joinUrl.match(/"Oid"\s*:\s*"([^"]+)"/i) || sm.joinUrl.match(/Oid=([^&]+)/i);
+                    if (oidMatch) {
+                        dbOids.push(oidMatch[1]);
+                    }
+                }
+            }
+
             const candidates = [...new Set([
                 process.env.DEFAULT_PANELIST_EMAIL,
+                ...dbOids,
                 ...dbOrganizers,
                 'nadeem.aehmad@kadellabs.com',
                 'mahima.dangi@kadellabs.com',
                 'achyut.pancholi@kadellabs.com'
             ])].filter(Boolean);
 
-            console.log(`Organizer UPN not present in webhook. Scanning candidate organizers to locate meeting: ${candidates.join(', ')}`);
+            console.log(`Organizer UPN/Oid not present in webhook. Scanning candidate organizers to locate meeting: ${candidates.join(', ')}`);
             const token = await getGraphAccessToken();
             
             for (const org of candidates) {
